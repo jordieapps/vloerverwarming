@@ -7,6 +7,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from shapely.geometry import Point, Polygon
 
+from .ruimtes import obstacle_footprints
+
 from .dxf_io import (
     add_manifold,
     add_room_result,
@@ -107,8 +109,12 @@ class App:
         self.maxn_var = tk.StringVar(value="8")
         ttk.Spinbox(settings, textvariable=self.maxn_var, from_=2, to=16, width=6).grid(row=6, column=1, sticky="w", padx=4)
 
-        ttk.Button(settings, text="🔥 Vloerverwarming tekenen", command=self.generate_heating).grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(10, 2)
+        ttk.Label(settings, text="Max m\u00b2 per spiraal-groep:").grid(row=7, column=0, sticky="w")
+        self.groep_var = tk.StringVar(value="25")
+        ttk.Spinbox(settings, textvariable=self.groep_var, from_=0, to=200, width=6).grid(row=7, column=1, sticky="w", padx=4)
+
+        ttk.Button(settings, text="\ud83d\udd25 Vloerverwarming tekenen", command=self.generate_heating).grid(
+            row=8, column=0, columnspan=2, sticky="ew", pady=(10, 2)
         )
         ttk.Button(settings, text="DXF opslaan als…", command=self.save_file).grid(row=8, column=0, columnspan=2, sticky="ew", pady=2)
         ttk.Button(settings, text="Rapport opslaan (CSV)…", command=self.save_report).grid(row=9, column=0, columnspan=2, sticky="ew", pady=2)
@@ -437,10 +443,11 @@ class App:
             angle = float(str(self.angle_var.get()).replace(",", "."))
             maxc = float(str(self.maxc_var.get()).replace(",", "."))
             maxn = int(self.maxn_var.get())
+            groep = float(str(self.groep_var.get()).replace(",", "."))
         except ValueError:
             messagebox.showerror("Fout", "Ongeldige instellingen (gebruik cijfers).")
             return None
-        return hoh, edge, angle, maxc, maxn
+        return hoh, edge, angle, maxc, maxn, groep
 
     def generate_heating(self) -> None:
         if not self.rooms:
@@ -449,7 +456,7 @@ class App:
         values = self.start_generation_values()
         if values is None:
             return
-        hoh, edge, angle, maxc, maxn = values
+        hoh, edge, angle, maxc, maxn, groep = values
         if self.doc is not None:
             msp = self.doc.modelspace()
             for entity in list(msp):
@@ -460,6 +467,26 @@ class App:
         if self.doc is not None:
             for v in self.verdelers:
                 add_manifold(self.doc, v["pos"], v["name"], self.unit_var.get())
+        obstacles = obstacle_footprints(self.doc) if self.doc is not None else []
+        if obstacles:
+            from shapely.ops import unary_union as _uu
+
+            kamers_gebied = _uu([r["poly"] for r in self.rooms])
+            obstacles = [o for o in obstacles if o.intersects(kamers_gebied)]
+        if obstacles and self.doc is not None:
+            add_obstacles(self.doc, obstacles, self.unit_var.get())
+        vrije_ruimte = None
+        if self.doc is not None:
+            from .ruimtes import WALL_LAYER_DEFAULTS, free_space as _free_space, hatch_fill_solids as _hatch_fills, wall_lines as _wall_lines
+
+            wanden = _wall_lines(self.doc, list(WALL_LAYER_DEFAULTS))
+            fills = _hatch_fills(self.doc)
+            vrije_ruimte = _free_space(
+                [r["poly"] for r in self.rooms],
+                obstacles=obstacles,
+                walls=wanden,
+                hatch_fills=fills,
+            )
         total_m2 = total_m = 0
         warnings = []
         counters: dict[str, int] = {}
@@ -481,6 +508,9 @@ class App:
                 manifold_pos=mpos,
                 first_circuit_number=first_nr,
                 max_circuits=manifold["max_kringen"] if manifold else None,
+                obstacles=obstacles,
+                group_max_m2=groep,
+                free_space_poly=vrije_ruimte,
             )
             room["result"] = result
             if result is None:
@@ -609,12 +639,13 @@ class App:
                     lx, ly - 8, text=f"K{c.number}", fill=COLORS["lang"], font=("Arial", 8, "bold")
                 )
             if res.manifold_pos:
-                mx, my = self.to_screen(*res.manifold_pos)
                 for c in res.circuits:
-                    s = self.to_screen(*c.start)
-                    e = self.to_screen(*c.end)
-                    self.canvas.create_line(mx, my, *s, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
-                    self.canvas.create_line(*e, mx, my, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
+                    for route in (c.supply_route, c.return_route):
+                        if len(route) >= 2:
+                            pts = []
+                            for x, y in route:
+                                pts.extend(self.to_screen(x, y))
+                            self.canvas.create_line(*pts, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
         self.canvas.create_text(sx, sy, text=label, fill=color, font=("Arial", 9, "bold"))
 
     def _draw_manifold(self, v: dict) -> None:
