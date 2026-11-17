@@ -13,8 +13,18 @@ automatisch opgesplitst in **kringen** die aansluiten op je **verdeler**.
 - **m² per ruimte** en totaal, automatisch berekend
 - Slangenpatronen: **serpentine** (heen-en-weer) en **dubbele spiraal**, met randafstand tot de muur
 - **Spiraal met haakse aansluitingen**: bij het patroon *spiraal* lopen de aanvoer en retour
-  **haaks langs de wanden** (L-vormige routes) van de verdeler naar de spiraal — netjes naar
-  de verdeler toe, zonder schuine lijnen
+  **haaks langs de wanden** van de verdeler naar de spiraal — netjes naar de verdeler toe,
+  zonder schuine lijnen
+- **Routes via deur en openingen**: aanvoer/retour worden gerouteerd door de **vrije ruimte**
+  (kamers minus wanden minus obstakels): ze lopen langs de wanden en **door deuren en
+  doorgangen** naar de verdeler, nooit door een wand (met `--rechte-routes` zet je dit uit)
+- **Obstakels uitsparen**: blokken met “trap” in de naam worden **automatisch gedetecteerd**
+  en niet verwarmd (laag `VV_OBSTAKEL`, stippellijn + tekst “niet verwarmen”); extra
+  obstakels (bv. kachel) geef je zelf op met `--obstakel X1,Y1,X2,Y2` of door ze in de
+  tekening te tekenen. De spiraal loopt dan als gesloten lus **om het obstakel heen**
+- **Grote ruimtes in meerdere spiraal-groepen**: is een ruimte groter dan de instelling
+  **max. m² per groep** (standaard 25 m²), dan wordt ze langs de langste zijde opgedeeld in
+  meerdere stroken, elk met een eigen spiraal en eigen aanvoer/retour naar de verdeler
 - **Verdeler plaatsen**: klik in de tekening waar de verdeler komt (meerdere verdelers mogelijk,
   elk met eigen max. kringlengte en aantal uitgangen)
 - **Automatische kringen**: slangen worden opgesplitst in kringen van max. de ingestelde
@@ -29,6 +39,7 @@ automatisch opgesplitst in **kringen** die aansluiten op je **verdeler**.
   - `VV_AANVOER` — aanvoer/retourlijnen verdeler ↔ kring
   - `VV_VERDELER` — verdelersymbool + naam
   - `VV_RUIMTE` — bewerkte zone (randafstand)
+  - `VV_OBSTAKEL` — uitgespaarde obstakels (stippellijn, “niet verwarmen”)
   - `VV_TEKST` — kringlabels, ruimtelabels en materiaallijst
 
 ## Installatie
@@ -61,7 +72,8 @@ python main.py
 3. **Verdeler plaatsen** → klik in de tekening waar de verdeler komt; geef naam,
    max. kringlengte en aantal uitgangen in (herhaal voor meerdere verdelers)
 4. Instellingen kiezen: eenheid (mm/cm/m), **h.o.h. (cm)**, randafstand, patroon, hoek,
-   max. kringlengte, kringen per verdeler
+   max. kringlengte, kringen per verdeler, **max. m² per spiraal-groep**
+   (0 = grote ruimtes niet opdelen)
 5. **🔥 Vloerverwarming tekenen** → kringen, aanvoer/retour en berekeningen per ruimte
 6. Eventueel: ruimte selecteren in de lijst, verdeler kiezen en **OK** om handmatig toe te wijzen
 7. **DXF opslaan als…** en/of **Rapport opslaan (CSV)…**
@@ -82,12 +94,26 @@ python cli.py plattegrond.dxf --uit plattegrond_vv.dxf --hoh 10 --patroon spiraa
 
 Opties: `--hoh` (cm), `--rand` (cm), `--patroon serpentine|spiraal`, `--hoek` (°),
 `--laag`, `--eenheid mm|cm|m`, `--max-kring` (m), `--max-kringen` (per verdeler),
-`--verdeler X,Y` (herhaalbaar), `--rapport` (CSV), `--geen-legende`.
+`--verdeler X,Y` (herhaalbaar), `--rapport` (CSV), `--geen-legende`,
+`--groep-m2` (max. m² per spiraal-groep, standaard 25, 0 = uit),
+`--obstakel X1,Y1,X2,Y2` (herhaalbaar), `--geen-obstakel-detectie`,
+`--rechte-routes` (niet via deur/opening routeren), `--geen-arcering-wand`
+(geöarcerde wandvullingen niet als wand meenemen).
 Automatische ruimtedetectie uit wanden: `--wanden` met optioneel `--wand-lagen L1,L2` en
 `--gebied X1,Y1,X2,Y2` (let op: zet bij negatieve coördinaten `--gebied=-105000,...` met =).
 De eenheid wordt automatisch uit `$INSUNITS` gelezen; Belgische tekeningen zijn meestal in mm.
 Verdelers in de CLI krijgen max. kringlengte/uitgangen uit de algemene opties; ruimtes gaan
 automatisch naar de dichtstbijzijnde verdeler.
+
+Voorbeeld met obstakels en groepen:
+
+```bash
+# trap wordt automatisch gedetecteerd; kachel handmatig uitsparen;
+# woonkamer > 25 m² wordt opgedeeld in meerdere spiraal-groepen
+python cli.py plattegrond.dxf --uit plattegrond_vv.dxf --hoh 10 --patroon spiraal \
+    --wanden --gebied=-100000,248000,-76000,272000 \
+    --verdeler -92800,260400 --obstakel=-88950,258312,-88150,259112
+```
 
 ## Testen
 
@@ -102,16 +128,20 @@ python -m pytest tests -q
 | 10 cm  | ± 9–10 m/m²    |
 | 15 cm  | ± 6–6,7 m/m²   |
 
-## Beperkingen (v2)
+## Beperkingen (v3)
 
 - Ruimtedetectie uit wanden werkt alleen als de wanden gesloten contouren vormen;
   bij deuropeningen blijven ruimtes open — teken die ruimtes dan in de GUI
-- Slangen volgen de ingestelde hoek; obstakels (bv. trapgat) worden omzeild via de
-  randafstand, niet met individuele omleidingen
-- Bij spiraal in sterk niet-convexe ruimtes wordt de grootste deelzone genomen
+- Obstakeldetectie herkent blokken en lagen met “trap” in de naam; andere obstakels
+  (kachel, keukeneiland…) geef je zelf op met `--obstakel` of door ze in de tekening te zetten
+- Routering door deur/openingen gebeurt over een raster van de halve h.o.h.-afstand; in zeer
+  grote tekeningen wordt het raster grof (en valt het terug op rechte routes)
+- Gearceerde wandvullingen (dunne gesloten polylines op een arceringslaag) worden als wand
+  meegenomen bij het routeren; met `--geen-arcering-wand` zet je dat uit
 - De spiraal is opgebouwd uit concentrische ringen (dubbele spiraal: heen naar binnen, terug
   naar buiten) met korte haakse verbindingsstukjes tussen de ringen; beide uiteinden komen
-  aan de buitenrand bij de verdeler terecht
-- Aanvoer/retour lopen als **haakse L-routes** (eerst verticaal, dan horizontaal voor de
-  aanvoer; omgekeerd voor de retour) van de verdeler naar het begin/einde van de kring
+  aan de buitenrand bij de verdeler terecht; om obstakels heen lopen gesloten hulplussen
+- Aanvoer/retour lopen **haaks en langs de wanden** door de vrije ruimte naar de verdeler;
+  ligt een kring-aansluitpunt in een wandzone, dan wordt het punt iets verschoven naar de
+  vrije ruimte
 - De materiaallijst is een indicatieve opgave: tel de verliesmeters van je verdeler er zelf bij op

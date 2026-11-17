@@ -13,6 +13,7 @@ LAYER_ROOM = "VV_RUIMTE"
 LAYER_TEXT = "VV_TEKST"
 LAYER_SUPPLY = "VV_AANVOER"
 LAYER_MANIFOLD = "VV_VERDELER"
+LAYER_OBSTACLE = "VV_OBSTAKEL"
 
 
 class DrawingError(Exception):
@@ -86,10 +87,32 @@ def ensure_layers(doc) -> None:
         LAYER_TEXT: 2,
         LAYER_SUPPLY: 30,
         LAYER_MANIFOLD: 5,
+        LAYER_OBSTACLE: 8,
     }
     for name, color in layers.items():
         if name not in doc.layers:
             doc.layers.add(name, color=color)
+
+
+def add_obstacles(doc, obstacles: list, unit: str = "mm") -> None:
+    ensure_layers(doc)
+    u = unit_to_m(unit)
+    msp = doc.modelspace()
+    for obst in obstacles:
+        geoms = obst.geoms if obst.geom_type in ("MultiPolygon", "GeometryCollection") else [obst]
+        for g in geoms:
+            if g.geom_type != "Polygon" or g.is_empty:
+                continue
+            msp.add_lwpolyline(
+                [(x, y) for x, y in g.exterior.coords],
+                close=True,
+                dxfattribs={"layer": LAYER_OBSTACLE, "linetype": "DASHED", "lineweight": 15},
+            )
+            msp.add_text(
+                "niet verwarmen",
+                height=0.12 / u,
+                dxfattribs={"layer": LAYER_OBSTACLE},
+            ).set_placement((g.centroid.x, g.centroid.y), align=TextEntityAlignment.LEFT)
 
 
 def add_manifold(doc, pos: tuple[float, float], name: str, unit: str = "mm") -> None:
@@ -113,11 +136,16 @@ def add_room_result(doc, result: RoomResult, unit: str = "mm") -> None:
     u = unit_to_m(unit)
     msp = doc.modelspace()
     if result.inset_polygon is not None:
-        msp.add_lwpolyline(
-            [(x, y) for x, y in result.inset_polygon.exterior.coords],
-            close=True,
-            dxfattribs={"layer": LAYER_ROOM, "lineweight": 0},
-        )
+        zone = result.inset_polygon
+        zone_geoms = zone.geoms if zone.geom_type in ("MultiPolygon", "GeometryCollection") else [zone]
+        for g in zone_geoms:
+            if g.geom_type != "Polygon" or g.is_empty:
+                continue
+            msp.add_lwpolyline(
+                [(x, y) for x, y in g.exterior.coords],
+                close=True,
+                dxfattribs={"layer": LAYER_ROOM, "lineweight": 0},
+            )
     for circuit in result.circuits:
         msp.add_lwpolyline(
             circuit.path.as_xyb(),

@@ -6,9 +6,11 @@ import sys
 
 from shapely.geometry import box, Point
 
+
 from vloerverwarming.dxf_io import (
     add_legend,
     add_manifold,
+    add_obstacles,
     add_room_result,
     detect_rooms,
     open_drawing,
@@ -17,7 +19,14 @@ from vloerverwarming.dxf_io import (
 )
 from vloerverwarming.geometry import polygon_area_m2
 from vloerverwarming.heating import generate_room
-from vloerverwarming.ruimtes import WALL_LAYER_DEFAULTS, detect_rooms_from_walls
+from vloerverwarming.ruimtes import (
+    WALL_LAYER_DEFAULTS,
+    detect_rooms_from_walls,
+    free_space,
+    hatch_fill_solids,
+    obstacle_footprints,
+    wall_lines,
+)
 
 
 def parse_verdeler(spec: str):
@@ -54,7 +63,18 @@ def main(argv=None) -> int:
     parser.add_argument("--rapport", default=None, help="CSV-rapport opslaan (pad naar .csv)")
     parser.add_argument("--wanden", action="store_true", help="Ruimtes automatisch detecteren uit wandlijnen i.p.v. gesloten polylines")
     parser.add_argument("--wand-lagen", default=None, help="Komma-gescheiden wandlagen (standaard: gebruikelijke wandlagen)")
-    parser.add_argument("--gebied", default=None, metavar="X1,Y1,X2,Y2", help="Gebied (in tekeningseenheden) waarbinnen ruimtes gezocht worden (aanbevolen bij --wanden)")
+    parser.add_argument("--gebied", default=None, metavar="X1,Y1,X2,Y2", help="Gebied (in tekeningeenheden) waarbinnen ruimtes gezocht worden (aanbevolen bij --wanden)")
+    parser.add_argument("--groep-m2", type=float, default=25.0, help="Max. m² per spiraal-groep; grotere ruimtes worden opgedeeld in meerdere spiralen (0 = uitzetten, standaard 25)")
+    parser.add_argument(
+        "--obstakel",
+        action="append",
+        default=[],
+        metavar="X1,Y1,X2,Y2",
+        help="Gebied dat niet verwarmd wordt, bv. trap of kachel (herhaalbaar)",
+    )
+    parser.add_argument("--geen-obstakel-detectie", action="store_true", help="Trap/gevel-blokken niet automatisch als obstakel herkennen")
+    parser.add_argument("--rechte-routes", action="store_true", help="Aanvoer/retour als gewone L-lijn i.p.v. via deur/opening routeren")
+    parser.add_argument("--geen-arcering-wand", action="store_true", help="Gearceerde wandvullingen niet als wand meenemen bij het routeren")
     args = parser.parse_args(argv)
 
     doc, unit = open_drawing(args.input, args.eenheid)
@@ -78,6 +98,41 @@ def main(argv=None) -> int:
         verdelers.append({"name": f"Verdeler {i}", "pos": parse_verdeler(spec), "max_kringen": args.max_kringen})
     for v in verdelers:
         add_manifold(doc, v["pos"], v["name"], unit)
+
+    obstacles = []
+    if not args.geen_obstakel_detectie:
+        region = None
+        if args.gebied:
+            x1, y1, x2, y2 = [float(v) for v in args.gebied.split(",")]
+            region = box(x1, y1, x2, y2)
+        obstacles = obstacle_footprints(doc, region=region)
+    for i, spec in enumerate(args.obstakel, start=1):
+        try:
+            x1, y1, x2, y2 = [float(v) for v in spec.split(",")]
+        except ValueError:
+            print(f"Ongeldig obstakel '{spec}' (gebruik: X1,Y1,X2,Y2).")
+            sys.exit(2)
+        obstacles.append(box(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+    if obstacles:
+        from shapely.ops import unary_union as _uu
+
+        kamers_gebied = _uu([poly for _, poly, _ in rooms])
+        obstacles = [o for o in obstacles if o.intersects(kamers_gebied)]
+    if obstacles:
+        add_obstacles(doc, obstacles, unit)
+        print(f"Obstakels uitgespaard: {len(obstacles)} (laag VV_OBSTAKEL)")
+
+    vrije_ruimte = None
+    if not args.rechte_routes:
+        wand_lagen = list(WALL_LAYER_DEFAULTS)
+        wanden = wall_lines(doc, wand_lagen, region)
+        fills = [] if args.geen_arcering_wand else hatch_fill_solids(doc, region=region)
+        vrije_ruimte = free_space(
+            [poly for _, poly, _ in rooms],
+            obstacles=obstacles,
+            walls=wanden,
+            hatch_fills=fills,
+        )
 
     print(f"{'Ruimte':<22} {'m²':>7} {'Verdeler':<12} {'Kringen':>7} {'Slang':>9} {'m/m²':>6}  Opmerking")
     print("-" * 95)
@@ -104,6 +159,9 @@ def main(argv=None) -> int:
             manifold_pos=mpos,
             first_circuit_number=first_nr,
             max_circuits=manifold["max_kringen"] if manifold else None,
+            obstacles=obstacles,
+            group_max_m2=args.groep_m2,
+            free_space_poly=vrije_ruimte,
         )
         if result is None:
             print(f"{'?':<22} {polygon_area_m2(poly, unit):>7.2f} {'-':<12} {'-':>7} {'-':>9} {'-':>6}  overgeslagen")

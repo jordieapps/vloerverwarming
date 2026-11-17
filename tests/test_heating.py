@@ -1,9 +1,16 @@
 import math
 
 import pytest
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon, box
 
-from vloerverwarming.heating import generate_room, l_route, route_length, serpentine_passes, spiral_passes
+from vloerverwarming.heating import (
+    _split_strips,
+    generate_room,
+    l_route,
+    route_length,
+    serpentine_passes,
+    spiral_passes,
+)
 
 
 def rect_mm(x=5000.0, y=4000.0):
@@ -122,3 +129,121 @@ def test_serpentine_length_matches_theory():
         c.arc_length() for c in connectors[:-1] if c is not None
     )
     assert total == pytest.approx(expected, rel=0.05)
+
+
+def _obstacle_room():
+    kamer = Polygon([(0, 0), (8000, 0), (8000, 6000), (0, 6000)])
+    obstakel = Polygon([(3000, 2000), (5000, 2000), (5000, 4000), (3000, 4000)])
+    return kamer, obstakel
+
+
+def test_obstacle_is_avoided():
+    from shapely.geometry import box
+
+    kamer, obstakel = _obstacle_room()
+    result = generate_room(
+        "test", kamer, 0.001, hoh_m=0.15, edge_m=0.10, pattern="spiraal",
+        obstacles=[obstakel],
+    )
+    assert result is not None
+    gebied = obstakel.buffer(-1)
+    for c in result.circuits:
+        for x, y in c.path.points:
+            assert not gebied.contains(Point(x, y))
+
+
+def test_spiral_with_hole_has_interior_loop():
+    kamer, obstakel = _obstacle_room()
+    werk = kamer.difference(obstakel)
+    passes, connectors = spiral_passes(werk.buffer(-100), 200.0)
+    assert passes
+    for p in passes:
+        for x, y in p.points:
+            assert not obstakel.contains(Point(x, y))
+    dichtbij = sum(
+        1 for p in passes for x, y in p.points
+        if obstakel.exterior.distance(Point(x, y)) < 300
+    )
+    assert dichtbij >= 4
+
+
+def test_split_strips_creates_groups():
+    from shapely.geometry import box
+
+    groot = Polygon([(0, 0), (12000, 0), (12000, 8000), (0, 8000)])
+    delen = _split_strips(groot, 3, 0.5 / 0.001**2)
+    assert len(delen) >= 3
+    totaal = sum(d.area for d in delen)
+    assert abs(totaal - groot.area) < groot.area * 0.01
+
+
+def test_group_splitting_yields_multiple_circuits():
+    from shapely.geometry import box
+
+    groot = Polygon([(0, 0), (12000, 0), (12000, 8000), (0, 8000)])
+    result = generate_room(
+        "groot", groot, 0.001, hoh_m=0.15, edge_m=0.10, pattern="spiraal",
+        group_max_m2=25.0,
+    )
+    assert result is not None
+    assert result.area_m2 > 25.0
+    assert len(result.circuits) >= 2
+
+
+def test_grid_router_routes_around_obstacle():
+    from shapely.geometry import box
+    from shapely.ops import unary_union
+
+    from vloerverwarming.routing import GridRouter
+
+    kamer, obstakel = _obstacle_room()
+    vrije = kamer.difference(obstakel)
+    router = GridRouter(vrije, 100.0)
+    pad = router.route((500, 500), (7500, 5500))
+    assert pad is not None
+    lijn = LineString(pad)
+    assert vrije.buffer(1.0).covers(lijn)
+    assert not lijn.crosses(obstakel)
+    assert not obstakel.buffer(-1).intersects(lijn)
+
+
+def test_grid_router_snaps_blocked_endpoints():
+    from shapely.geometry import box
+
+    from vloerverwarming.routing import GridRouter
+
+    vrije = box(0, 0, 5000, 5000).buffer(-200)
+    router = GridRouter(vrije, 100.0)
+    pad = router.route((10, 2500), (4990, 2500))
+    assert pad is not None
+    assert vrije.buffer(1.0).covers(LineString(pad))
+
+
+def test_obstacle_footprints_from_blocks():
+    ezdxf = pytest.importorskip("ezdxf")
+    from vloerverwarming.ruimtes import obstacle_footprints
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    trap = doc.blocks.new(name="trap test")
+    trap.add_lwpolyline([(0, 0), (1000, 0), (1000, 300), (0, 300)], close=True)
+    msp.add_blockref("trap test", (5000, 5000))
+    obstakels = obstacle_footprints(doc)
+    assert len(obstakels) == 1
+    assert obstakels[0].equals(box(5000, 5000, 6000, 5300))
+
+
+def test_free_space_subtracts_walls_and_hatch():
+    from shapely.geometry import box
+
+    from vloerverwarming.ruimtes import free_space
+
+    kamer = box(0, 0, 8000, 6000)
+    wand = LineString([(4000, -60), (4000, 300)])
+    obstakel = box(1000, 1000, 2000, 2000)
+    hatch = box(3000, 1000, 3100, 1800)
+    vr = free_space([kamer], obstacles=[obstakel], walls=[wand], wall_thickness=120,
+                    hatch_fills=[hatch])
+    assert vr is not None
+    assert vr.intersection(obstakel).area == 0
+    assert vr.intersection(hatch).area == 0
