@@ -11,7 +11,10 @@ automatisch opgesplitst in **kringen** die aansluiten op je **verdeler**.
 - **Ruimtes detecteren uit wandlijnen** (CLI `--wanden`): vlakvorming tussen wandlagen, gekoppeld aan ruimtelabels (werkt wanneer wanden gesloten contouren vormen)
 - Ruimtes **automatisch detecteren** (gesloten polylines) of **zelf intekenen** door te klikken
 - **m² per ruimte** en totaal, automatisch berekend
-- Slangenpatronen: **serpentine** (heen-en-weer) en **spiraal**, met randafstand tot de muur
+- Slangenpatronen: **serpentine** (heen-en-weer) en **dubbele spiraal**, met randafstand tot de muur
+- **Spiraal met haakse aansluitingen**: bij het patroon *spiraal* lopen de aanvoer en retour
+  **haaks langs de wanden** (L-vormige routes) van de verdeler naar de spiraal — netjes naar
+  de verdeler toe, zonder schuine lijnen
 - **Verdeler plaatsen**: klik in de tekening waar de verdeler komt (meerdere verdelers mogelijk,
   elk met eigen max. kringlengte en aantal uitgangen)
 - **Automatische kringen**: slangen worden opgesplitst in kringen van max. de ingestelde
@@ -106,5 +109,9 @@ python -m pytest tests -q
 - Slangen volgen de ingestelde hoek; obstakels (bv. trapgat) worden omzeild via de
   randafstand, niet met individuele omleidingen
 - Bij spiraal in sterk niet-convexe ruimtes wordt de grootste deelzone genomen
-- Aanvoer/retour lopen als rechte lijn van de verdeler naar het begin/einde van de kring
+- De spiraal is opgebouwd uit concentrische ringen (dubbele spiraal: heen naar binnen, terug
+  naar buiten) met korte haakse verbindingsstukjes tussen de ringen; beide uiteinden komen
+  aan de buitenrand bij de verdeler terecht
+- Aanvoer/retour lopen als **haakse L-routes** (eerst verticaal, dan horizontaal voor de
+  aanvoer; omgekeerd voor de retour) van de verdeler naar het begin/einde van de kring
 - De materiaallijst is een indicatieve opgave: tel de verliesmeters van je verdeler er zelf bij op

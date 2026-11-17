@@ -54,6 +54,23 @@ class Circuit:
     length_m: float
     start: tuple[float, float]
     end: tuple[float, float]
+    supply_route: list = field(default_factory=list)
+    return_route: list = field(default_factory=list)
+
+
+def l_route(a: tuple[float, float], b: tuple[float, float], vertical_first: bool = True) -> list:
+    if abs(a[0] - b[0]) < 1e-9 or abs(a[1] - b[1]) < 1e-9:
+        return [a, b]
+    if vertical_first:
+        return [a, (a[0], b[1]), b]
+    return [a, (b[0], a[1]), b]
+
+
+def route_length(points: list) -> float:
+    return sum(
+        math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1])
+        for i in range(len(points) - 1)
+    )
 
 
 @dataclass
@@ -125,32 +142,56 @@ def serpentine_passes(poly: Polygon, spacing: float, angle_deg: float = 0.0):
     return passes, connectors
 
 
-def spiral_passes(poly: Polygon, spacing: float, max_rings: int = 500):
-    rings: list[Polygon] = []
+def spiral_passes(poly: Polygon, spacing: float, start_hint: tuple[float, float] | None = None,
+                  max_rings: int = 500):
+    inward: list[Polygon] = []
     cur = poly
-    while len(rings) < max_rings:
-        rings.append(cur)
-        nxt = largest_polygon(cur.buffer(-spacing, join_style=2))
+    while len(inward) < max_rings:
+        inward.append(cur)
+        nxt = largest_polygon(cur.buffer(-2.0 * spacing, join_style=2))
         if nxt is None or nxt.area < spacing * spacing:
             break
         cur = nxt
+    midway: dict[int, Polygon] = {}
+    for i in range(len(inward)):
+        m = largest_polygon(poly.buffer(-(2 * i + 1) * spacing, join_style=2))
+        if m is not None and m.area > 1e-9:
+            midway[i] = m
+    rings: list[Polygon] = list(inward)
+    for i in sorted(midway.keys(), reverse=True):
+        rings.append(midway[i])
     passes: list[PipePath] = []
     connectors: list[PipePath | None] = []
     prev_end: tuple[float, float] | None = None
-    for ring in rings:
+    for idx, ring in enumerate(rings):
         coords = list(ring.exterior.coords)[:-1]
         if len(coords) < 3:
             continue
-        if prev_end is not None:
+        if idx == 0 and start_hint is not None:
+            hint = start_hint
+        elif idx == len(rings) - 1 and start_hint is not None:
+            hint = start_hint
+        elif prev_end is not None:
+            hint = prev_end
+        else:
+            hint = None
+        if hint is not None:
             best_idx, best_d = 0, float("inf")
             for j, c in enumerate(coords):
-                d = (c[0] - prev_end[0]) ** 2 + (c[1] - prev_end[1]) ** 2
+                d = (c[0] - hint[0]) ** 2 + (c[1] - hint[1]) ** 2
                 if d < best_d:
                     best_d, best_idx = d, j
             ordered = coords[best_idx:] + coords[:best_idx]
-            connectors.append(PipePath([prev_end, ordered[0]], [0.0]))
         else:
             ordered = coords
+        if prev_end is not None:
+            nx, ny = ordered[0]
+            px, py = prev_end
+            if abs(nx - px) > 1e-9 and abs(ny - py) > 1e-9:
+                conn_pts = [prev_end, (nx, py), ordered[0]]
+            else:
+                conn_pts = [prev_end, ordered[0]]
+            connectors.append(PipePath(conn_pts, [0.0] * (len(conn_pts) - 1)))
         ring_pts = ordered + [ordered[0]]
         passes.append(PipePath(ring_pts, [0.0] * (len(ring_pts) - 1)))
         prev_end = ordered[0]
@@ -206,9 +247,9 @@ def _circuit_length_units(passes, connectors, i0, i1, manifold_pos) -> float:
     path = join_circuit(passes, connectors, i0, i1)
     length = path.arc_length()
     if manifold_pos is not None:
-        length += 2.0 * Point(manifold_pos).distance(
-            LineString([path.points[0], path.points[-1]])
-        )
+        supply = l_route(manifold_pos, path.points[0], vertical_first=True)
+        retour = l_route(path.points[-1], manifold_pos, vertical_first=False)
+        length += route_length(supply) + route_length(retour)
     return length
 
 
@@ -258,8 +299,14 @@ def generate_room(
     if inset is None or inset.area < 1e-9:
         return None
     spacing = hoh_m / unit_to_m
+    start_hint = None
+    if manifold_pos is not None:
+        from shapely.ops import nearest_points as _np
+
+        _, hint_pt = _np(Point(manifold_pos), inset.exterior)
+        start_hint = (hint_pt.x, hint_pt.y)
     if pattern == "spiraal":
-        passes, connectors = spiral_passes(inset, spacing)
+        passes, connectors = spiral_passes(inset, spacing, start_hint)
     else:
         passes, connectors = serpentine_passes(inset, spacing, angle_deg)
     if not passes:
@@ -289,8 +336,12 @@ def generate_room(
         length_units = path.arc_length()
         start = path.points[0]
         end = path.points[-1]
+        supply_route: list = []
+        return_route: list = []
         if manifold_pos is not None:
-            length_units += 2.0 * Point(manifold_pos).distance(LineString([start, end]))
+            supply_route = l_route(manifold_pos, start, vertical_first=True)
+            return_route = l_route(end, manifold_pos, vertical_first=False)
+            length_units += route_length(supply_route) + route_length(return_route)
         length_m = length_units * unit_to_m
         if length_m > max_circuit_m:
             warnings.append(f"kring {first_circuit_number + k} is {length_m:.0f} m > max {max_circuit_m:.0f} m")
@@ -301,6 +352,8 @@ def generate_room(
                 length_m=length_m,
                 start=start,
                 end=end,
+                supply_route=supply_route,
+                return_route=return_route,
             )
         )
     result.pipe_length_m = sum(c.length_m for c in result.circuits)

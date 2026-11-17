@@ -130,13 +130,12 @@ def add_room_result(doc, result: RoomResult, unit: str = "mm") -> None:
             dxfattribs={"layer": LAYER_TEXT},
         ).set_placement((circuit.start[0], circuit.start[1] + 0.15 / u), align=TextEntityAlignment.LEFT)
         if result.manifold_pos is not None:
-            mx, my = result.manifold_pos
-            msp.add_line(
-                (mx, my), circuit.start, dxfattribs={"layer": LAYER_SUPPLY, "linetype": "DASHED"}
-            )
-            msp.add_line(
-                circuit.end, (mx, my), dxfattribs={"layer": LAYER_SUPPLY, "linetype": "DASHED"}
-            )
+            for route in (circuit.supply_route, circuit.return_route):
+                if len(route) >= 2:
+                    msp.add_lwpolyline(
+                        [(x, y) for x, y in route],
+                        dxfattribs={"layer": LAYER_SUPPLY, "linetype": "DASHED", "lineweight": 15},
+                    )
     xs, ys = [], []
     for c in result.circuits:
         xs.extend(p[0] for p in c.path.points)

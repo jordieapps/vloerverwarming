@@ -3,7 +3,7 @@ import math
 import pytest
 from shapely.geometry import Point, Polygon
 
-from vloerverwarming.heating import generate_room, serpentine_passes, spiral_passes
+from vloerverwarming.heating import generate_room, l_route, route_length, serpentine_passes, spiral_passes
 
 
 def rect_mm(x=5000.0, y=4000.0):
@@ -32,6 +32,30 @@ def test_spiral_passes():
     passes, connectors = spiral_passes(rect_mm().buffer(-100), 100.0)
     assert len(passes) > 3
     assert sum(p.arc_length() for p in passes) > 0
+
+
+def test_double_spiral_ends_near_supply():
+    inner = rect_mm().buffer(-100)
+    manifold = (-1000.0, 2000.0)
+    from shapely.ops import nearest_points
+    from shapely.geometry import Point as P
+
+    _, hint = nearest_points(P(manifold), inner.exterior)
+    passes, connectors = spiral_passes(inner, 100.0, (hint.x, hint.y))
+    full = [p for p in passes]
+    start = full[0].points[0]
+    end = full[-1].points[-1]
+    assert math.hypot(end[0] - start[0], end[1] - start[1]) < 3 * 100.0
+    for p in full:
+        for x, y in p.points:
+            assert inner.contains(P(x, y)) or inner.exterior.distance(P(x, y)) < 1e-6
+
+
+def test_l_route():
+    assert l_route((0, 0), (10, 5)) == [(0, 0), (0, 5), (10, 5)]
+    assert l_route((0, 0), (10, 5), vertical_first=False) == [(0, 0), (10, 0), (10, 5)]
+    assert l_route((0, 0), (0, 5)) == [(0, 0), (0, 5)]
+    assert route_length([(0, 0), (0, 5), (10, 5)]) == 15.0
 
 
 def test_unit_conversion_and_m_per_m2():

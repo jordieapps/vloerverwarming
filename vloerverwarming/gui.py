@@ -609,12 +609,13 @@ class App:
                     lx, ly - 8, text=f"K{c.number}", fill=COLORS["lang"], font=("Arial", 8, "bold")
                 )
             if res.manifold_pos:
-                mx, my = self.to_screen(*res.manifold_pos)
                 for c in res.circuits:
-                    s = self.to_screen(*c.start)
-                    e = self.to_screen(*c.end)
-                    self.canvas.create_line(mx, my, *s, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
-                    self.canvas.create_line(*e, mx, my, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
+                    for route in (c.supply_route, c.return_route):
+                        if len(route) >= 2:
+                            pts = []
+                            for x, y in route:
+                                pts.extend(self.to_screen(x, y))
+                            self.canvas.create_line(*pts, fill=COLORS["aanvoer"], width=1, dash=(4, 3))
         self.canvas.create_text(sx, sy, text=label, fill=color, font=("Arial", 9, "bold"))
 
     def _draw_manifold(self, v: dict) -> None:
