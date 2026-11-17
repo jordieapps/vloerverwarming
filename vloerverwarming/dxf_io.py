@@ -3,6 +3,7 @@ from __future__ import annotations
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
 
+from . import binary_dxf
 from .geometry import INSUNITS_TO_UNIT, shoelace_area
 from .heating import RoomResult
 
@@ -26,7 +27,13 @@ def open_drawing(path: str, unit: str | None = None):
 
             doc = odafc.readfile(path)
         elif low.endswith(".dxf"):
-            doc = ezdxf.readfile(path)
+            with open(path, "rb") as fp:
+                head = fp.read(22)
+            if head.startswith(binary_dxf.SENTINEL):
+                with open(path, "rb") as fp:
+                    doc = ezdxf.read(binary_dxf.binary_dxf_to_stream(fp.read()))
+            else:
+                doc = ezdxf.readfile(path)
         else:
             raise DrawingError("Ondersteunde bestanden: .dxf en .dwg")
     except DrawingError:
