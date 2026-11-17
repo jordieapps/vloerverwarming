@@ -4,7 +4,7 @@ import argparse
 import csv
 import sys
 
-from shapely.geometry import Point
+from shapely.geometry import box, Point
 
 from vloerverwarming.dxf_io import (
     add_legend,
@@ -17,6 +17,7 @@ from vloerverwarming.dxf_io import (
 )
 from vloerverwarming.geometry import polygon_area_m2
 from vloerverwarming.heating import generate_room
+from vloerverwarming.ruimtes import WALL_LAYER_DEFAULTS, detect_rooms_from_walls
 
 
 def parse_verdeler(spec: str):
@@ -51,13 +52,25 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--geen-legende", action="store_true", help="Geen materiaallijst in de DXF zetten")
     parser.add_argument("--rapport", default=None, help="CSV-rapport opslaan (pad naar .csv)")
+    parser.add_argument("--wanden", action="store_true", help="Ruimtes automatisch detecteren uit wandlijnen i.p.v. gesloten polylines")
+    parser.add_argument("--wand-lagen", default=None, help="Komma-gescheiden wandlagen (standaard: gebruikelijke wandlagen)")
+    parser.add_argument("--gebied", default=None, metavar="X1,Y1,X2,Y2", help="Gebied (in tekeningseenheden) waarbinnen ruimtes gezocht worden (aanbevolen bij --wanden)")
     args = parser.parse_args(argv)
 
     doc, unit = open_drawing(args.input, args.eenheid)
     u = unit_to_m(unit)
-    rooms = detect_rooms(doc, layer=args.laag, unit=unit)
+    if args.wanden:
+        layers = args.wand_lagen.split(",") if args.wand_lagen else list(WALL_LAYER_DEFAULTS)
+        region = None
+        if args.gebied:
+            x1, y1, x2, y2 = [float(v) for v in args.gebied.split(",")]
+            region = box(x1, y1, x2, y2)
+        found = detect_rooms_from_walls(doc, layers=layers, region=region, scale_to_m=u)
+        rooms = [(name, poly, None) for name, poly in found]
+    else:
+        rooms = detect_rooms(doc, layer=args.laag, unit=unit)
     if not rooms:
-        print("Geen gesloten polylines gevonden. Teken ruimtes als gesloten polyline of gebruik --laag.")
+        print("Geen ruimtes gevonden. Gebruik gesloten polylines, --wanden met --gebied, of teken in de GUI.")
         return 1
 
     verdelers = []

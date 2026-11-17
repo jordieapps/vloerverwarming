@@ -202,6 +202,35 @@ def build_circuits(
     return groups
 
 
+def _circuit_length_units(passes, connectors, i0, i1, manifold_pos) -> float:
+    path = join_circuit(passes, connectors, i0, i1)
+    length = path.arc_length()
+    if manifold_pos is not None:
+        length += 2.0 * Point(manifold_pos).distance(
+            LineString([path.points[0], path.points[-1]])
+        )
+    return length
+
+
+def _split_oversized(groups, passes, connectors, max_len_units, manifold_pos):
+    for _ in range(50):
+        changed = False
+        new_groups = []
+        for i0, i1 in groups:
+            length = _circuit_length_units(passes, connectors, i0, i1, manifold_pos)
+            if length > max_len_units and i1 > i0:
+                mid = (i0 + i1) // 2
+                new_groups.append((i0, mid))
+                new_groups.append((mid + 1, i1))
+                changed = True
+            else:
+                new_groups.append((i0, i1))
+        groups = new_groups
+        if not changed:
+            break
+    return groups
+
+
 def nearest_point_on_path(path: PipePath, pt: tuple[float, float]) -> tuple[float, float]:
     ls = LineString(path.points)
     _, np_ = nearest_points(Point(pt), ls)
@@ -242,6 +271,7 @@ def generate_room(
     else:
         link_units = 0.0
     groups = build_circuits(passes, connectors, max_len_units, link_units)
+    groups = _split_oversized(groups, passes, connectors, max_len_units, manifold_pos)
     result = RoomResult(
         name=name,
         area_m2=area_m2,

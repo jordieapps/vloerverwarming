@@ -7,7 +7,8 @@ automatisch opgesplitst in **kringen** die aansluiten op je **verdeler**.
 
 ## Functies
 
-- **DXF inlezen** rechtstreeks; **DWG inlezen** via de gratis ODA File Converter (zie onder)
+- **DXF inlezen** rechtstreeks, óók **binaire DXF** ("AutoCAD Binary DXF") wordt automatisch herkend en geconverteerd; **DWG inlezen** via de gratis ODA File Converter (zie onder)
+- **Ruimtes detecteren uit wandlijnen** (CLI `--wanden`): vlakvorming tussen wandlagen, gekoppeld aan ruimtelabels (werkt wanneer wanden gesloten contouren vormen)
 - Ruimtes **automatisch detecteren** (gesloten polylines) of **zelf intekenen** door te klikken
 - **m² per ruimte** en totaal, automatisch berekend
 - Slangenpatronen: **serpentine** (heen-en-weer) en **spiraal**, met randafstand tot de muur
@@ -79,6 +80,8 @@ python cli.py plattegrond.dxf --uit plattegrond_vv.dxf --hoh 10 --patroon spiraa
 Opties: `--hoh` (cm), `--rand` (cm), `--patroon serpentine|spiraal`, `--hoek` (°),
 `--laag`, `--eenheid mm|cm|m`, `--max-kring` (m), `--max-kringen` (per verdeler),
 `--verdeler X,Y` (herhaalbaar), `--rapport` (CSV), `--geen-legende`.
+Automatische ruimtedetectie uit wanden: `--wanden` met optioneel `--wand-lagen L1,L2` en
+`--gebied X1,Y1,X2,Y2` (let op: zet bij negatieve coördinaten `--gebied=-105000,...` met =).
 De eenheid wordt automatisch uit `$INSUNITS` gelezen; Belgische tekeningen zijn meestal in mm.
 Verdelers in de CLI krijgen max. kringlengte/uitgangen uit de algemene opties; ruimtes gaan
 automatisch naar de dichtstbijzijnde verdeler.
@@ -98,6 +101,8 @@ python -m pytest tests -q
 
 ## Beperkingen (v2)
 
+- Ruimtedetectie uit wanden werkt alleen als de wanden gesloten contouren vormen;
+  bij deuropeningen blijven ruimtes open — teken die ruimtes dan in de GUI
 - Slangen volgen de ingestelde hoek; obstakels (bv. trapgat) worden omzeild via de
   randafstand, niet met individuele omleidingen
 - Bij spiraal in sterk niet-convexe ruimtes wordt de grootste deelzone genomen
