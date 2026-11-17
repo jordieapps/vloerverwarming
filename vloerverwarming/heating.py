@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from shapely.affinity import rotate as sh_rotate
 from shapely.geometry import LineString, Point, Polygon
@@ -37,16 +37,36 @@ class PipePath:
             out.append((x, y, b))
         return out
 
+    def rotated(self, angle_deg: float, cx: float, cy: float) -> "PipePath":
+        a = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(a), math.sin(a)
+        pts = []
+        for x, y in self.points:
+            dx, dy = x - cx, y - cy
+            pts.append((cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a))
+        return PipePath(pts, list(self.bulges))
+
+
+@dataclass
+class Circuit:
+    number: int
+    path: PipePath
+    length_m: float
+    start: tuple[float, float]
+    end: tuple[float, float]
+
 
 @dataclass
 class RoomResult:
     name: str
     area_m2: float
-    pipe_length_m: float
-    m_per_m2: float
-    path: PipePath
-    inset_polygon: Polygon
-    warnings: list[str]
+    manifold: str | None
+    manifold_pos: tuple[float, float] | None
+    circuits: list[Circuit] = field(default_factory=list)
+    pipe_length_m: float = 0.0
+    m_per_m2: float = 0.0
+    inset_polygon: Polygon | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 def _line_segments(geom) -> list[LineString]:
@@ -62,10 +82,14 @@ def _line_segments(geom) -> list[LineString]:
     return []
 
 
-def serpentine(poly: Polygon, spacing: float, angle_deg: float = 0.0) -> PipePath | None:
+def _close(a: tuple[float, float], b: tuple[float, float], eps: float = 1e-6) -> bool:
+    return abs(a[0] - b[0]) < eps and abs(a[1] - b[1]) < eps
+
+
+def serpentine_passes(poly: Polygon, spacing: float, angle_deg: float = 0.0):
     work = sh_rotate(poly, angle_deg, origin="centroid") if angle_deg else poly
     minx, miny, maxx, maxy = work.bounds
-    passes: list[tuple[tuple[float, float], tuple[float, float], float]] = []
+    raw: list[tuple[tuple[float, float], tuple[float, float], float]] = []
     row = 0
     y = miny + spacing / 2.0
     while y <= maxy + 1e-9:
@@ -75,86 +99,113 @@ def serpentine(poly: Polygon, spacing: float, angle_deg: float = 0.0) -> PipePat
         ordered = segs if forward else list(reversed(segs))
         for s in ordered:
             coords = list(s.coords)
-            if forward:
-                passes.append((coords[0], coords[-1], y))
-            else:
-                passes.append((coords[-1], coords[0], y))
+            raw.append((coords[0], coords[-1], y) if forward else (coords[-1], coords[0], y))
         row += 1
         y += spacing
-    if not passes:
-        return None
-    points = [passes[0][0]]
-    bulges: list[float] = []
-    for i, (start, end, row_y) in enumerate(passes):
-        points.append(end)
-        bulges.append(0.0)
-        if i + 1 >= len(passes):
-            break
-        nstart, _, nrow_y = passes[i + 1]
-        if abs(nrow_y - row_y) < 1e-9:
-            points.append(nstart)
-            bulges.append(0.0)
+    passes: list[PipePath] = []
+    connectors: list[PipePath | None] = []
+    for i, (start, end, row_y) in enumerate(raw):
+        passes.append(PipePath([start, end], [0.0]))
+        if i + 1 >= len(raw):
+            connectors.append(None)
             continue
-        px, py = points[-2]
-        tdx, tdy = end[0] - px, end[1] - py
-        cdx, cdy = nstart[0] - end[0], nstart[1] - end[1]
-        cross = tdx * cdy - tdy * cdx
-        points.append(nstart)
-        bulges.append(1.0 if cross > 0 else -1.0)
-    path = PipePath(points, bulges)
+        nstart, _, nrow_y = raw[i + 1]
+        if abs(nrow_y - row_y) < 1e-9:
+            connectors.append(PipePath([end, nstart], [0.0]))
+        else:
+            tdx, tdy = end[0] - start[0], end[1] - start[1]
+            cdx, cdy = nstart[0] - end[0], nstart[1] - end[1]
+            cross = tdx * cdy - tdy * cdx
+            connectors.append(PipePath([end, nstart], [1.0 if cross > 0 else -1.0]))
     if angle_deg:
-        path = _rotate_path(path, -angle_deg, work.centroid.x, work.centroid.y)
-    return path
+        a = math.radians(-angle_deg)
+        cx, cy = work.centroid.x, work.centroid.y
+        passes = [p.rotated(-angle_deg, cx, cy) for p in passes]
+        connectors = [c.rotated(-angle_deg, cx, cy) if c else None for c in connectors]
+    return passes, connectors
 
 
-def _rotate_path(path: PipePath, angle_deg: float, cx: float, cy: float) -> PipePath:
-    a = math.radians(angle_deg)
-    cos_a, sin_a = math.cos(a), math.sin(a)
-    rotated = []
-    for x, y in path.points:
-        dx, dy = x - cx, y - cy
-        rotated.append((cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a))
-    return PipePath(rotated, path.bulges)
-
-
-def spiral(poly: Polygon, spacing: float, max_rings: int = 500) -> PipePath | None:
+def spiral_passes(poly: Polygon, spacing: float, max_rings: int = 500):
     rings: list[Polygon] = []
     cur = poly
     while len(rings) < max_rings:
         rings.append(cur)
-        nxt = cur.buffer(-spacing, join_style=2)
-        nxt = largest_polygon(nxt)
+        nxt = largest_polygon(cur.buffer(-spacing, join_style=2))
         if nxt is None or nxt.area < spacing * spacing:
             break
         cur = nxt
-    if not rings:
-        return None
-    points: list[tuple[float, float]] = []
-    bulges: list[float] = []
-    for i, ring in enumerate(rings):
+    passes: list[PipePath] = []
+    connectors: list[PipePath | None] = []
+    prev_end: tuple[float, float] | None = None
+    for ring in rings:
         coords = list(ring.exterior.coords)[:-1]
-        if not coords:
+        if len(coords) < 3:
             continue
-        if points:
-            prev = points[-1]
-            ring_ls = LineString(ring.exterior.coords)
-            ring_coords = list(ring.exterior.coords)
+        if prev_end is not None:
             best_idx, best_d = 0, float("inf")
-            for j, c in enumerate(ring_coords):
-                d = (c[0] - prev[0]) ** 2 + (c[1] - prev[1]) ** 2
+            for j, c in enumerate(coords):
+                d = (c[0] - prev_end[0]) ** 2 + (c[1] - prev_end[1]) ** 2
                 if d < best_d:
                     best_d, best_idx = d, j
-            ordered = ring_coords[best_idx:-1] + ring_coords[: best_idx + 1]
-            points.append(ordered[0])
-            bulges.append(0.0)
-            points.extend(ordered[1:])
-            bulges.extend([0.0] * (len(ordered) - 1))
+            ordered = coords[best_idx:] + coords[:best_idx]
+            connectors.append(PipePath([prev_end, ordered[0]], [0.0]))
         else:
-            points.extend(coords)
-            bulges.extend([0.0] * len(coords))
-    if len(points) < 2:
-        return None
-    return PipePath(points, bulges)
+            ordered = coords
+        ring_pts = ordered + [ordered[0]]
+        passes.append(PipePath(ring_pts, [0.0] * (len(ring_pts) - 1)))
+        prev_end = ordered[0]
+    connectors.append(None)
+    return passes, connectors
+
+
+def join_circuit(passes: list[PipePath], connectors: list[PipePath | None], i0: int, i1: int) -> PipePath:
+    pts: list[tuple[float, float]] = []
+    bulges: list[float] = []
+    for i in range(i0, i1 + 1):
+        if i > i0 and connectors[i - 1] is not None:
+            conn = connectors[i - 1]
+            skip = 1 if pts and _close(pts[-1], conn.points[0]) else 0
+            pts.extend(conn.points[skip:])
+            bulges.extend(conn.bulges[skip:])
+        p = passes[i]
+        skip = 1 if pts and _close(pts[-1], p.points[0]) else 0
+        pts.extend(p.points[skip:])
+        bulges.extend(p.bulges[skip:])
+    return PipePath(pts, bulges)
+
+
+def build_circuits(
+    passes: list[PipePath],
+    connectors: list[PipePath | None],
+    max_len_units: float,
+    link_units: float,
+) -> list[tuple[int, int]]:
+    if not passes:
+        return []
+    groups: list[tuple[int, int]] = []
+    i0 = 0
+    acc = 0.0
+    for i, p in enumerate(passes):
+        add = p.arc_length()
+        if i > i0 and connectors[i - 1] is not None:
+            add += connectors[i - 1].arc_length()
+        if groups == [] and i == 0:
+            acc = add
+            continue
+        if i > i0 and acc + add + 2.0 * link_units > max_len_units:
+            groups.append((i0, i - 1))
+            i0 = i
+            acc = add
+        else:
+            acc += add
+    groups.append((i0, len(passes) - 1))
+    return groups
+
+
+def nearest_point_on_path(path: PipePath, pt: tuple[float, float]) -> tuple[float, float]:
+    ls = LineString(path.points)
+    _, np_ = nearest_points(Point(pt), ls)
+    return (np_.x, np_.y)
 
 
 def generate_room(
@@ -166,6 +217,10 @@ def generate_room(
     pattern: str = "serpentine",
     angle_deg: float = 0.0,
     max_circuit_m: float = 120.0,
+    manifold_name: str | None = None,
+    manifold_pos: tuple[float, float] | None = None,
+    first_circuit_number: int = 1,
+    max_circuits: int | None = None,
 ) -> RoomResult | None:
     area_m2 = abs(poly.area) * unit_to_m**2
     if area_m2 < 0.5:
@@ -175,23 +230,50 @@ def generate_room(
         return None
     spacing = hoh_m / unit_to_m
     if pattern == "spiraal":
-        path = spiral(inset, spacing)
+        passes, connectors = spiral_passes(inset, spacing)
     else:
-        path = serpentine(inset, spacing, angle_deg)
-    if path is None:
+        passes, connectors = serpentine_passes(inset, spacing, angle_deg)
+    if not passes:
         return None
-    length_m = path.arc_length() * unit_to_m
-    warnings = []
-    if length_m > max_circuit_m:
-        warnings.append(
-            f"lengte {length_m:.0f} m > max kring {max_circuit_m:.0f} m: splits in meerdere kringen"
-        )
-    return RoomResult(
+    max_len_units = max_circuit_m / unit_to_m
+    if manifold_pos is not None:
+        field_ls = LineString([pt for p in passes for pt in p.points])
+        link_units = Point(manifold_pos).distance(field_ls)
+    else:
+        link_units = 0.0
+    groups = build_circuits(passes, connectors, max_len_units, link_units)
+    result = RoomResult(
         name=name,
         area_m2=area_m2,
-        pipe_length_m=length_m,
-        m_per_m2=length_m / area_m2 if area_m2 > 0 else 0.0,
-        path=path,
+        manifold=manifold_name,
+        manifold_pos=manifold_pos,
         inset_polygon=inset,
-        warnings=warnings,
     )
+    warnings: list[str] = []
+    if max_circuits is not None and len(groups) > max_circuits:
+        warnings.append(
+            f"{len(groups)} kringen nodig maar verdeler heeft {max_circuits} uitgangen"
+        )
+    for k, (i0, i1) in enumerate(groups):
+        path = join_circuit(passes, connectors, i0, i1)
+        length_units = path.arc_length()
+        start = path.points[0]
+        end = path.points[-1]
+        if manifold_pos is not None:
+            length_units += 2.0 * Point(manifold_pos).distance(LineString([start, end]))
+        length_m = length_units * unit_to_m
+        if length_m > max_circuit_m:
+            warnings.append(f"kring {first_circuit_number + k} is {length_m:.0f} m > max {max_circuit_m:.0f} m")
+        result.circuits.append(
+            Circuit(
+                number=first_circuit_number + k,
+                path=path,
+                length_m=length_m,
+                start=start,
+                end=end,
+            )
+        )
+    result.pipe_length_m = sum(c.length_m for c in result.circuits)
+    result.m_per_m2 = result.pipe_length_m / area_m2 if area_m2 > 0 else 0.0
+    result.warnings = warnings
+    return result
